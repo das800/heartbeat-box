@@ -13,7 +13,7 @@ USER=$1
 if [ "$USER" != "dayan" ] && [ "$USER" != "luna" ]; then
   echo "Invalid user: $USER"
   echo "<user> should be either 'dayan' or 'luna'"
-  exit 1
+  exit 0
 fi
 
 # Determine partner based on user
