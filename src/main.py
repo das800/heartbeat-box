@@ -19,6 +19,10 @@ topic_pub = f'{partner}/heartbeat'
 # Setup onboard LED for status
 onboard_led = Pin("LED", Pin.OUT)
 
+# Status timings
+FAST_BLINK_MS = 100   # Fast blink for WiFi retry
+SLOW_BLINK_MS = 500   # Slow blink for MQTT retry
+
 # Setup switch with pull-down resistor
 switch = Pin(16, Pin.IN, Pin.PULL_DOWN)
 
@@ -139,82 +143,94 @@ def heartbeat_pulse(t):
         return 0
 
 def blink_status():
+    """Single blink to indicate a connection attempt"""
     onboard_led.on()
     time.sleep(1)
     onboard_led.off()
 
 def connect_wifi():
-    """Connect to WiFi, return True if successful"""
+    """Keep trying WiFi until connected"""
     wlan = network.WLAN(network.STA_IF)
-    if not wlan.isconnected():
-        print('Connecting to Wi-Fi...')
+    last_blink = time.ticks_ms()
+    led_state = False
+    
+    # Keep trying until connected
+    while not wlan.isconnected():
+        print('Attempting WiFi connection...')
         wlan.active(True)
         wlan.connect(wifi.wifi_ssid, wifi.wifi_password)
-        # Wait up to 10 seconds for connection
-        for _ in range(10):
-            if wlan.isconnected():
-                print('Connected to Wi-Fi, IP:', wlan.ifconfig()[0])
-                blink_status()
-                return True
-            time.sleep(1)
-        return False
+        
+        # Blink while waiting/retrying
+        while not wlan.isconnected():
+            if time.ticks_diff(time.ticks_ms(), last_blink) >= FAST_BLINK_MS:
+                led_state = not led_state
+                onboard_led.value(led_state)
+                last_blink = time.ticks_ms()
+            
+            time.sleep_ms(10)  # Small delay to prevent tight loop
+    
+    print('Connected to Wi-Fi, IP:', wlan.ifconfig()[0])
+    onboard_led.off()
+    blink_status()  # Single blink for success
     return True
 
 def connect_mqtt():
-    """Connect to MQTT broker, return True if successful"""
+    """Keep trying MQTT until connected"""
     global mqtt_client
+    last_blink = time.ticks_ms()
+    led_state = False
     
-    try:
-        # Setup SSL with CA certificate
+    while True:
         try:
+            # Setup SSL
             with open(common_mqtt.ca_cert_path, "rb") as f:
                 ca_cert = f.read()
-        except OSError as e:
-            print(f"Failed to read CA certificate: {e}")
-            return False
-            
-        try:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_verify_locations(cadata=ca_cert)
-        except ValueError as e:
-            print(f"SSL context creation failed: {e}")
-            return False
-        
-        # Create new client instance
-        mqtt_client = MQTTClient(user, common_mqtt.mqtt_server, 
-                               port=common_mqtt.mqtt_port,
-                               user=user_mqtt.mqtt_user, 
-                               password=user_mqtt.mqtt_password, 
-                               ssl=context)
-        mqtt_client.set_callback(message_callback)
-        mqtt_client.connect()
-        mqtt_client.subscribe(topic_sub)
-        print(f"Connected to MQTT broker as {user_mqtt.mqtt_user}")
-        blink_status()
-        return True
-    except (OSError, MemoryError) as e:
-        print(f"MQTT connection failed ({type(e).__name__}): {e}")
-        return False
+            
+            # Try connection
+            mqtt_client = MQTTClient(user, common_mqtt.mqtt_server, 
+                                   port=common_mqtt.mqtt_port,
+                                   user=user_mqtt.mqtt_user, 
+                                   password=user_mqtt.mqtt_password, 
+                                   ssl=context)
+            mqtt_client.set_callback(message_callback)
+            mqtt_client.connect()
+            mqtt_client.subscribe(topic_sub)
+            
+            print(f"Connected to MQTT broker as {user_mqtt.mqtt_user}")
+            onboard_led.off()
+            blink_status()  # Single blink for success
+            return True
+            
+        except Exception as e:
+            print(f"MQTT connection failed ({type(e).__name__}): {e}")
+            
+            # Blink and wait before retry
+            if time.ticks_diff(time.ticks_ms(), last_blink) >= SLOW_BLINK_MS:
+                led_state = not led_state
+                onboard_led.value(led_state)
+                last_blink = time.ticks_ms()
+            
+            time.sleep_ms(10)  # Small delay to prevent tight loop
 
 def check_connections():
-    """Check and restore connections if needed"""
+    """Verify connections and retry if needed"""
     global mqtt_client
     
     # Check WiFi first
     if not network.WLAN(network.STA_IF).isconnected():
-        print("WiFi disconnected, attempting to reconnect...")
-        if not connect_wifi():
-            return False
+        print("WiFi disconnected")
+        connect_wifi()  # Will keep trying until reconnected
     
-    # Check MQTT connection
+    # Only check MQTT if WiFi is ok
     try:
         mqtt_client.ping()
-    except OSError as e:
-        print(f"MQTT disconnected (Error: {e}), attempting to reconnect...")
-        if not connect_mqtt():
-            return False
+    except:
+        print("MQTT disconnected")
+        connect_mqtt()  # Will keep trying until reconnected
     
-    return True
+    return True  # If we get here, both connections are good
 
 def message_callback(topic, msg):
     global heart_beating, last_beat_trigger
@@ -231,23 +247,19 @@ def message_callback(topic, msg):
         print(f"Message parsing error ({type(e).__name__}): {e}")
 
 # Initial connections
-if not connect_wifi():
-    print("Failed to connect to WiFi")
-    raise RuntimeError("WiFi connection failed")
-
-if not connect_mqtt():
-    print("Failed to connect to MQTT")
-    raise RuntimeError("MQTT connection failed")
+print("Starting connection process...")
+connect_wifi()    # Will keep trying until connected
+connect_mqtt()    # Will keep trying until connected
+print("All connections established!")
 
 try:
     # Main loop
     while True:
         current_time = time.ticks_ms()
         
-        # Periodically check connections
+        # Check connections (will retry indefinitely if either fails)
         if time.ticks_diff(current_time, last_connection_check) >= connection_check_interval:
-            if not check_connections():
-                print("Connection check failed")
+            check_connections()
             last_connection_check = current_time
         
         # Check switch state (with debounce)
