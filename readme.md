@@ -99,3 +99,24 @@ Once a pair of devices is installed, they will:
    - No local animation is shown (only the receiving device shows the heartbeat)
 
 The LED display uses both multiplexing (100Hz refresh) and PWM (1MHz) to create smooth animations with varied brightness levels.
+
+## Demonstration
+
+![Front view of circuit board](media/circuit_front.jpg)
+![Back view of circuit board](media/circuit_back.jpg)
+
+### Operation
+
+The device follows this connection sequence:
+
+1. Upon power-up, attempts WiFi connection using credentials in `cred`
+   - Success: Single 1-second blink
+   - Failure: Continuous 0.1-second blinks, retries connection
+
+2. After WiFi success, connects to MQTT broker
+   - Success: Single 1-second blink
+   - Failure: Continuous 0.5-second blinks, retries connection
+
+Once fully connected, the device operates as demonstrated below:
+
+![Device Operation Demo](media/operation.webm)
